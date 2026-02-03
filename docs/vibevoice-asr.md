@@ -3,13 +3,13 @@
 [![Hugging Face](https://img.shields.io/badge/HuggingFace-Collection-orange?logo=huggingface)](https://huggingface.co/microsoft/VibeVoice-ASR)
 [![Live Playground](https://img.shields.io/badge/Live-Playground-green?logo=gradio)](https://aka.ms/vibevoice-asr)
 
-**VibeVoice-ASR** is a unified speech-to-text model designed to handle **60-minute long-form audio** in a single pass, generating structured transcriptions containing **Who (Speaker), When (Timestamps), and What (Content)**, with support for **Customized Hotwords**.
+**VibeVoice-ASR** is a unified speech-to-text model designed to handle **60-minute long-form audio** in a single pass, generating structured transcriptions containing **Who (Speaker), When (Timestamps), and What (Content)**, with support for **Customized Hotwords** and over **50 languages**.
 
 **Model:** [VibeVoice-ASR-7B](https://huggingface.co/microsoft/VibeVoice-ASR)<br>
 **Demo:** [VibeVoice-ASR-Demo](https://aka.ms/vibevoice-asr)<br>
 **Report:** [VibeVoice-ASR-Report](https://arxiv.org/pdf/2601.18184)<br>
 **Finetuning:** [finetune-guide](../finetuning-asr/README.md)<br>
-**vllm:** [vllm-asr](./vibevoice-vllm-asr.md)<br>
+**vLLM:** [vLLM-asr](./vibevoice-vllm-asr.md)<br>
 
 
 ## 🔥 Key Features
@@ -22,6 +22,9 @@
 
 - **📝 Rich Transcription (Who, When, What)**:
   The model jointly performs ASR, diarization, and timestamping, producing a structured output that indicates *who* said *what* and *when*.
+  
+- **🌍 Multilingual & Code-Switching Support**:
+  It supports over 50 languages, requires no explicit language setting, and natively handles code-switching within and across utterances. Language distribution can be found [here](#language-distribution).
 
 
 ## 🏗️ Model Architecture
@@ -83,6 +86,12 @@ python demo/vibevoice_asr_gradio_demo.py --model_path microsoft/VibeVoice-ASR --
 python demo/vibevoice_asr_inference_from_file.py --model_path microsoft/VibeVoice-ASR --audio_files [add a audio path here] 
 ```
 
+
+## Finetuning
+LoRA (Low-Rank Adaptation) fine-tuning is supported. See [Finetuning](../finetuning-asr/README.md) for detailed guide.
+
+
+
 ## Results
 
 ### Multilingual
@@ -111,18 +120,14 @@ python demo/vibevoice_asr_inference_from_file.py --model_path microsoft/VibeVoic
 | MLC-Challenge  | Average   | 3.42 | 14.81 | 15.66  | 12.07|
 
 
-## Finetuning
-LoRA (Low-Rank Adaptation) fine-tuning is supported. See [Finetuning](../finetuning-asr/README.md) for detailed guide.
-
+## Language Distribution
+<p align="center">
+  <img src="../Figures/language_distribution_horizontal.png" alt="Language Distribution" width="80%">
+</p>
 
 ## 📄 License
 
 This project is licensed under the [MIT License](../LICENSE).
 
-
-## Language Distribution
-<p align="center">
-  <img src="../Figures/language_distribution_horizontal.png" alt="Language Distribution" width="80%">
-</p>
 
 

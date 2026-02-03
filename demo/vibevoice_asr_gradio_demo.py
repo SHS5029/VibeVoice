@@ -48,12 +48,17 @@ except ImportError:
 from vibevoice.modular.modeling_vibevoice_asr import VibeVoiceASRForConditionalGeneration
 from vibevoice.processor.vibevoice_asr_processor import VibeVoiceASRProcessor
 from vibevoice.processor.audio_utils import load_audio_use_ffmpeg, COMMON_AUDIO_EXTS
+from vibevoice.llm_client import LLMClient
+from transformers import BitsAndBytesConfig
+
+# Initialize LLM Client
+llm_client = LLMClient()
 
 
 class VibeVoiceASRInference:
     """Simple inference wrapper for VibeVoice ASR model."""
     
-    def __init__(self, model_path: str, device: str = "cuda", dtype: torch.dtype = torch.bfloat16, attn_implementation: str = "flash_attention_2"):
+    def __init__(self, model_path: str, device: str = "cuda", dtype: torch.dtype = torch.bfloat16, attn_implementation: str = "sdpa"):
         """
         Initialize the ASR inference pipeline.
         
@@ -68,20 +73,48 @@ class VibeVoiceASRInference:
         # Load processor
         self.processor = VibeVoiceASRProcessor.from_pretrained(model_path)
         
-        # Load model
+        # Determine if CUDA is available and intended device is CUDA/auto
+        use_quantization = torch.cuda.is_available() and device in ("cuda", "auto")
+        
         print(f"Using attention implementation: {attn_implementation}")
-        self.model = VibeVoiceASRForConditionalGeneration.from_pretrained(
-            model_path,
-            dtype=dtype,
-            device_map=device if device == "auto" else None,
-            attn_implementation=attn_implementation,
-            trust_remote_code=True
-        )
         
-        if device != "auto":
-            self.model = self.model.to(device)
+        if use_quantization:
+            # Load model with 4bit quantization for better GPU efficiency
+            print(f"🔧 Applying 4-bit quantization to fit model in 8GB VRAM...")
+            
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4"
+            )
+            
+            self.model = VibeVoiceASRForConditionalGeneration.from_pretrained(
+                model_path,
+                quantization_config=quantization_config,
+                device_map="auto",  # Auto device placement with quantization
+                attn_implementation=attn_implementation,
+                trust_remote_code=True
+            )
+            
+            # Note: With quantization, device is automatically managed by device_map="auto"
+            # No need for manual .to(device) call
+            self.device = device if device != "auto" else next(self.model.parameters()).device
+        else:
+            # Load model without quantization for CPU/MPS
+            self.model = VibeVoiceASRForConditionalGeneration.from_pretrained(
+                model_path,
+                dtype=dtype,
+                device_map=device if device == "auto" else None,
+                attn_implementation=attn_implementation,
+                trust_remote_code=True
+            )
+            
+            # Move to device only if not "auto"
+            if device != "auto":
+                self.model = self.model.to(device)
+            self.device = device if device != "auto" else next(self.model.parameters()).device
         
-        self.device = device if device != "auto" else next(self.model.parameters()).device
         self.model.eval()
         
         # Print model info
@@ -470,7 +503,7 @@ def slice_audio_to_temp(
     return temp_file.name, None
 
 
-def initialize_model(model_path: str, device: str = "cuda", attn_implementation: str = "flash_attention_2"):
+def initialize_model(model_path: str, device: str = "cuda", attn_implementation: str = "sdpa"):
     """Initialize the ASR model."""
     global asr_model
     try:
@@ -512,14 +545,14 @@ def transcribe_audio(
         context_info: Optional context information (e.g., hotwords, speaker names, topics)
     
     Yields:
-        Tuple of (raw_text, audio_segments_html)
+        Tuple of (raw_text, audio_segments_html, analysis_html)
     """
     if asr_model is None:
-        yield "❌ Please load a model first!", ""
+        yield "❌ Please load a model first!", "", ""
         return
     
     if not audio_path_input and audio_input is None:
-        yield "❌ Please provide audio input!", ""
+        yield "❌ Please provide audio input!", "", ""
         return
     
     try:
@@ -528,7 +561,7 @@ def transcribe_audio(
         end_sec = parse_time_to_seconds(end_time_input)
         print(f"[INFO] Parsed time range: start={start_sec}, end={end_sec}")
         if (start_time_input and start_sec is None) or (end_time_input and end_sec is None):
-            yield "❌ Invalid time format. Use seconds or hh:mm:ss.", ""
+            yield "❌ Invalid time format. Use seconds or hh:mm:ss.", "", ""
             return
 
         audio_path = None
@@ -551,7 +584,7 @@ def transcribe_audio(
             sample_rate, audio_array = audio_input
             print(f"[INFO] Received microphone audio with sample_rate={sample_rate}")
         elif audio_path is None:
-            yield "❌ Invalid audio input format!", ""
+            yield "❌ Invalid audio input format!", "", ""
             return
 
         # If slicing is requested, load and slice audio
@@ -562,11 +595,11 @@ def transcribe_audio(
                     audio_array, sample_rate = load_audio_use_ffmpeg(audio_path, resample=False)
                     print("[INFO] Loaded audio for slicing via ffmpeg")
                 except Exception as exc:
-                    yield f"❌ Failed to load audio for slicing: {exc}", ""
+                    yield f"❌ Failed to load audio for slicing: {exc}", "", ""
                     return
             sliced_path, err = slice_audio_to_temp(audio_array, sample_rate, start_sec, end_sec)
             if err:
-                yield f"❌ {err}", ""
+                yield f"❌ {err}", "", ""
                 return
             audio_path = sliced_path
             print(f"[INFO] Sliced audio written to temp file: {audio_path}")
@@ -621,13 +654,13 @@ def transcribe_audio(
             # Show streaming output with live stats, format for readability
             formatted_text = generated_text.replace('},', '},\n')
             streaming_output = f"--- 🔴 LIVE Streaming Output (tokens: {token_count}, time: {elapsed:.1f}s) ---\n{formatted_text}"
-            yield streaming_output, "<div style='padding: 20px; text-align: center; color: #6c757d;'>⏳ Generating transcription... Audio segments will appear after completion.</div>"
+            yield streaming_output, "<div style='padding: 20px; text-align: center; color: #6c757d;'>⏳ Generating transcription... Audio segments will appear after completion.</div>", ""
         
         # Wait for thread to complete
         transcription_thread.join()
         
         if result_container["error"]:
-            yield f"❌ Error during transcription: {result_container['error']}", ""
+            yield f"❌ Error during transcription: {result_container['error']}", "", ""
             return
         
         result = result_container["result"]
@@ -874,16 +907,91 @@ def transcribe_audio(
             </div>
             """
         
+        # LLM Context Analysis
+        print("[INFO] Performing LLM Context Analysis...")
+        analysis = llm_client.analyze_call(result['segments'])
+        
+        analysis_html = f"""
+        <style>
+        .analysis-container {{
+            padding: 20px;
+            background-color: var(--segment-bg);
+            border-radius: 8px;
+            border: 1px solid var(--segment-border);
+            color: var(--segment-text);
+        }}
+        .analysis-section {{
+            margin-bottom: 20px;
+        }}
+        .analysis-label {{
+            font-weight: bold;
+            color: var(--content-border);
+            margin-bottom: 5px;
+            display: block;
+        }}
+        .analysis-content {{
+            padding: 10px;
+            background-color: var(--content-bg);
+            border-radius: 4px;
+            border-left: 4px solid var(--content-border);
+        }}
+        .badge {{
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 12px;
+            font-weight: bold;
+            color: white;
+            margin-right: 5px;
+        }}
+        .badge-intent {{ background-color: #4299e1; }}
+        .badge-sentiment {{ background-color: #48bb78; }}
+        </style>
+        <div class="analysis-container">
+            <h3>🔍 통화 문맥 및 상황 분석 (AI)</h3>
+            
+            <div class="analysis-section">
+                <span class="analysis-label">📋 요약</span>
+                <div class="analysis-content">{analysis['summary']}</div>
+            </div>
+            
+            <div class="analysis-section">
+                <span class="analysis-label">📍 현재 상황</span>
+                <div class="analysis-content">{analysis['situation']}</div>
+            </div>
+            
+            <div class="analysis-row" style="display: flex; gap: 20px;">
+                <div class="analysis-section" style="flex: 1;">
+                    <span class="analysis-label">📂 고객 의도</span>
+                    <div><span class="badge badge-intent">{analysis['intent']}</span></div>
+                </div>
+                <div class="analysis-section" style="flex: 1;">
+                    <span class="analysis-label">🎭 감정 상태</span>
+                    <div><span class="badge badge-sentiment">{analysis['sentiment']}</span></div>
+                </div>
+            </div>
+            
+            <div class="analysis-section">
+                <span class="analysis-label">✅ 다음 권장 조치</span>
+                <div class="analysis-content">
+                    <ul style="margin: 0; padding-left: 20px;">
+                        {"".join(f"<li>{action}</li>" for action in analysis['next_actions'])}
+                    </ul>
+                </div>
+            </div>
+        </div>
+        """
+
         # Final yield with complete results
-        yield raw_output, audio_segments_html
+        yield raw_output, audio_segments_html, analysis_html
         
     except Exception as e:
         print(f"Error during transcription: {e}")
         print(traceback.format_exc())
-        yield f"❌ Error during transcription: {str(e)}", ""
+        yield f"❌ Error during transcription: {str(e)}", "", ""
 
 
-def create_gradio_interface(model_path: str, default_max_tokens: int = 8192, attn_implementation: str = "flash_attention_2"):
+def create_gradio_interface(model_path: str, default_max_tokens: int = 8192, attn_implementation: str = "sdpa"):
     """Create and launch Gradio interface.
     
     Args:
@@ -1038,6 +1146,11 @@ def create_gradio_interface(model_path: str, default_max_tokens: int = 8192, att
                         audio_segments_output = gr.HTML(
                             label="Play individual segments to verify accuracy"
                         )
+                    
+                    with gr.TabItem("Context Analysis"):
+                        analysis_output = gr.HTML(
+                            label="Contextual analysis of the conversation"
+                        )
         
         # Event handlers
         do_sample_checkbox.change(
@@ -1076,7 +1189,7 @@ def create_gradio_interface(model_path: str, default_max_tokens: int = 8192, att
                 repetition_penalty_slider,
                 context_info_input
             ],
-            outputs=[raw_output, audio_segments_output]
+            outputs=[raw_output, audio_segments_output, analysis_output]
         )
         
         stop_button.click(
@@ -1119,8 +1232,8 @@ def main():
     parser.add_argument(
         "--attn_implementation",
         type=str,
-        default="flash_attention_2",
-        help="Attention implementation to use (default: flash_attention_2)"
+        default="sdpa",
+        help="Attention implementation to use (default: sdpa; options: flash_attention_2, sdpa, eager)"
     )
     parser.add_argument(
         "--max_new_tokens",
@@ -1131,7 +1244,7 @@ def main():
     parser.add_argument(
         "--host",
         type=str,
-        default="0.0.0.0",
+        default="127.0.0.1",
         help="Host to bind the server to"
     )
     parser.add_argument(

@@ -20,6 +20,7 @@ from functools import wraps
 
 from vibevoice.modular.modeling_vibevoice_asr import VibeVoiceASRForConditionalGeneration
 from vibevoice.processor.vibevoice_asr_processor import VibeVoiceASRProcessor
+from vibevoice.llm_client import LLMClient
 
 
 class VibeVoiceASRBatchInference:
@@ -249,7 +250,7 @@ class VibeVoiceASRBatchInference:
         return all_results
 
 
-def print_result(result: Dict[str, Any]):
+def print_result(result: Dict[str, Any], analysis: Optional[Dict[str, Any]] = None):
     """Pretty print a single transcription result."""
     print(f"\nFile: {result['file']}")
     print(f"Generation Time: {result['generation_time']:.2f}s")
@@ -263,6 +264,19 @@ def print_result(result: Dict[str, Any]):
                   f"Speaker {seg.get('speaker_id', 'N/A')}: {seg.get('text', '')}...")
         if len(result['segments']) > 50:
             print(f"  ... and {len(result['segments']) - 50} more segments")
+    
+    if analysis:
+        print(f"\n{'='*60}")
+        print("🔍 Context Analysis (AI):")
+        print(f"{'='*60}")
+        print(f"📋 요약: {analysis['summary']}")
+        print(f"📍 상황: {analysis['situation']}")
+        print(f"📂 의도: {analysis['intent']}")
+        print(f"🎭 감정: {analysis['sentiment']}")
+        print(f"✅ 권장 조치:")
+        for action in analysis['next_actions']:
+            print(f"   - {action}")
+        print(f"{'='*60}")
 
 
 def load_dataset_and_concatenate(
@@ -477,6 +491,11 @@ def main():
         choices=["flash_attention_2", "sdpa", "eager", "auto"],
         help="Attention implementation to use. 'auto' will select the best available for your device (flash_attention_2 for CUDA, sdpa for MPS/CPU/XPU)"
     )
+    parser.add_argument(
+        "--no-analysis",
+        action="store_true",
+        help="Skip LLM context analysis"
+    )
     
     args = parser.parse_args()
     
@@ -546,6 +565,11 @@ def main():
         attn_implementation=args.attn_implementation
     )
     
+    # Initialize LLM Client for context analysis
+    llm_client = None
+    if not args.no_analysis:
+        llm_client = LLMClient()
+    
     # If temperature is 0, use greedy decoding (no sampling)
     do_sample = args.temperature > 0
     
@@ -572,7 +596,13 @@ def main():
     print("="*80)
     for result in all_results:
         print("\n" + "-"*60)
-        print_result(result)
+        
+        # Perform context analysis
+        analysis = None
+        if llm_client and result['segments']:
+            analysis = llm_client.analyze_call(result['segments'])
+        
+        print_result(result, analysis)
 
 
 if __name__ == "__main__":
